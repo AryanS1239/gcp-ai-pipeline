@@ -1,5 +1,7 @@
 # 🧠 GCP AI Image Processing Pipeline
 
+> **🚀 Live at:** https://gcp-ai-pipeline.vercel.app
+
 A serverless pipeline that extracts text (OCR) and labels from uploaded images using Google Cloud Vision API, with results stored in Supabase.
 
 ## Architecture
