@@ -76,33 +76,39 @@ export default function HomePage() {
       // Poll Supabase for Vision API results (Cloud Function processes async)
       setStatus('processing');
       setProgress(100);
-      await pollForResult(uploadedFileName, uploadStartedAt);    } catch (err) {
+      await pollForResult(uploadedFileName);
+    } catch (err) {
       console.error(err);
       setErrorMsg(err.message || 'Something went wrong');
       setStatus('error');
     }
   };
 
-  const pollForResult = async (since, attempts = 0) => {
-    if (attempts > 20) {
-      setErrorMsg('Processing timed out. Check back in a moment.');
+  const pollForResult = async (targetFileName, attempts = 0) => {
+    if (attempts > 25) {
+      setErrorMsg('Processing timed out. Please click "View recent results" below.');
       setStatus('error');
       return;
     }
-    await new Promise((r) => setTimeout(r, 3000));
-    const { data } = await supabase
-      .from('image_results')
-      .select('*')
-      .gte('created_at', since)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+    await new Promise((r) => setTimeout(r, 2500));
+    try {
+      const { data } = await supabase
+        .from('image_results')
+        .select('*')
+        .ilike('image_url', `%${targetFileName}%`)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (data) {
-      setResult(data);
-      setStatus('done');
-    } else {
-      await pollForResult(since, attempts + 1);
+      if (data) {
+        setResult(data);
+        setStatus('done');
+      } else {
+        await pollForResult(targetFileName, attempts + 1);
+      }
+    } catch (err) {
+      console.warn('Polling error, retrying:', err);
+      await pollForResult(targetFileName, attempts + 1);
     }
   };
 

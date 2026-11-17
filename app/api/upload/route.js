@@ -94,12 +94,40 @@ export async function POST(request) {
         throw new Error(`GCS upload failed (${gcsRes.status}): ${errBody}`);
       }
     } else {
-      // ── Local: use @google-cloud/storage with ADC ─────────────────────────
-      const storage = new Storage({ projectId: PROJECT_ID });
-      await storage.bucket(BUCKET_NAME).file(safeFileName).save(buffer, {
-        contentType: file.type,
-        resumable: false,
-      });
+      // ── Local: try ADC first; fallback to gcloud print-access-token ──────
+      let uploaded = false;
+      try {
+        const storage = new Storage({ projectId: PROJECT_ID });
+        await storage.bucket(BUCKET_NAME).file(safeFileName).save(buffer, {
+          contentType: file.type,
+          resumable: false,
+        });
+        uploaded = true;
+      } catch (adcErr) {
+        console.warn('[upload] ADC not present, falling back to local gcloud auth token');
+      }
+
+      if (!uploaded) {
+        const { execSync } = await import('child_process');
+        const token = execSync('gcloud auth print-access-token').toString().trim();
+        const uploadUrl =
+          `https://storage.googleapis.com/upload/storage/v1/b/` +
+          `${BUCKET_NAME}/o?uploadType=media&name=${encodeURIComponent(safeFileName)}`;
+
+        const gcsRes = await fetch(uploadUrl, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': file.type,
+          },
+          body: buffer,
+        });
+
+        if (!gcsRes.ok) {
+          const errBody = await gcsRes.text();
+          throw new Error(`GCS upload failed (${gcsRes.status}): ${errBody}`);
+        }
+      }
     }
 
     return NextResponse.json({ success: true, fileName: safeFileName });
