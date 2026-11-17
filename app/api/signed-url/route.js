@@ -1,10 +1,18 @@
 import { NextResponse } from 'next/server';
 import { Storage } from '@google-cloud/storage';
 
-const storage = new Storage({
-  projectId: process.env.GCP_PROJECT_ID,
-  // Uses GOOGLE_APPLICATION_CREDENTIALS env var automatically
-});
+// Support both local file-based credentials and Vercel env-var credentials
+const getStorage = () => {
+  if (process.env.GCP_SERVICE_ACCOUNT_JSON) {
+    // Vercel: service account JSON stored as env var string
+    const credentials = JSON.parse(process.env.GCP_SERVICE_ACCOUNT_JSON);
+    return new Storage({ projectId: process.env.GCP_PROJECT_ID, credentials });
+  }
+  // Local: uses GOOGLE_APPLICATION_CREDENTIALS file path
+  return new Storage({ projectId: process.env.GCP_PROJECT_ID });
+};
+
+const storage = getStorage();
 
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
 const SIGNED_URL_EXPIRY_MINUTES = 10;
