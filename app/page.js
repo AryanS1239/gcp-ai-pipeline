@@ -44,29 +44,32 @@ export default function HomePage() {
     setErrorMsg('');
 
     try {
-      // 1. Get a signed upload URL from our Next.js API
-      const res = await fetch('/api/signed-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: file.name, fileType: file.type }),
-      });
-      if (!res.ok) throw new Error('Failed to get upload URL');
-      const { signedUrl } = await res.json();
+      // Send file directly to our API route — it proxies to GCS server-side
+      const formData = new FormData();
+      formData.append('file', file);
 
-      // 2. Upload directly to GCS using XHR (for progress tracking)
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload');
+
+      // Track upload progress
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+      };
+
       await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('PUT', signedUrl);
-        xhr.setRequestHeader('Content-Type', file.type);
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            resolve();
+          } else {
+            const msg = (() => { try { return JSON.parse(xhr.responseText)?.error; } catch { return null; } })();
+            reject(new Error(msg || `Upload failed (${xhr.status})`));
+          }
         };
-        xhr.onload = () => (xhr.status === 200 ? resolve() : reject(new Error(`GCS upload failed: ${xhr.status}`)));
         xhr.onerror = () => reject(new Error('Network error during upload'));
-        xhr.send(file);
+        xhr.send(formData);
       });
 
-      // 3. Poll Supabase for results (Cloud Function processes asynchronously)
+      // Poll Supabase for Vision API results (Cloud Function processes async)
       setStatus('processing');
       setProgress(100);
       await pollForResult();
