@@ -4,24 +4,24 @@ import { Storage } from '@google-cloud/storage';
 const PROJECT_ID  = process.env.GCP_PROJECT_ID;
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
 
-// WIF config — keyless auth for Vercel (no SA key needed)
-// STS audience: the full WIF provider resource path
+// WIF config — keyless GCP auth (no SA key needed)
 const WIF_STS_AUDIENCE =
   `//iam.googleapis.com/projects/61278613673/locations/global/` +
   `workloadIdentityPools/vercel-pool/providers/vercel-provider`;
-// OIDC audience: what Vercel actually puts in the token
 const VERCEL_OIDC_AUDIENCE = 'https://vercel.com/aryan-sonawanes-projects';
-const SA_EMAIL =
-  'gcp-ai-pipeline-sa@gcp-ai-pipeline-515018.iam.gserviceaccount.com';
+const SA_EMAIL = 'gcp-ai-pipeline-sa@gcp-ai-pipeline-515018.iam.gserviceaccount.com';
 
+/**
+ * Exchange Vercel's OIDC token for a GCP access token via WIF.
+ * No SA key required — works despite org policy restrictions.
+ */
 async function getGcpAccessToken() {
   const { getVercelOidcToken } = await import('@vercel/oidc');
 
-  // 1. Get Vercel OIDC token
+  // 1. Vercel OIDC JWT
   const oidcToken = await getVercelOidcToken(VERCEL_OIDC_AUDIENCE);
-  console.log('[upload] Got OIDC token, length:', oidcToken?.length);
 
-  // 2. Exchange for a federated GCP access token via STS
+  // 2. STS token exchange → federated access token
   const stsRes = await fetch('https://sts.googleapis.com/v1/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -35,10 +35,9 @@ async function getGcpAccessToken() {
     }),
   });
   const stsBody = await stsRes.json();
-  if (!stsRes.ok) throw new Error(`STS exchange failed (${stsRes.status}): ${JSON.stringify(stsBody)}`);
-  console.log('[upload] STS exchange OK');
+  if (!stsRes.ok) throw new Error(`STS exchange failed: ${JSON.stringify(stsBody)}`);
 
-  // 3. Impersonate the service account to get a scoped access token
+  // 3. Impersonate service account → scoped access token
   const iamRes = await fetch(
     `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA_EMAIL}:generateAccessToken`,
     {
@@ -47,36 +46,13 @@ async function getGcpAccessToken() {
         Authorization: `Bearer ${stsBody.access_token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        scope: ['https://www.googleapis.com/auth/devstorage.read_write'],
-      }),
+      body: JSON.stringify({ scope: ['https://www.googleapis.com/auth/devstorage.read_write'] }),
     }
   );
   const iamBody = await iamRes.json();
-  if (!iamRes.ok) throw new Error(`SA impersonation failed (${iamRes.status}): ${JSON.stringify(iamBody)}`);
-  console.log('[upload] SA impersonation OK');
+  if (!iamRes.ok) throw new Error(`SA impersonation failed: ${JSON.stringify(iamBody)}`);
 
   return iamBody.accessToken;
-}
-
-async function getStorage() {
-  if (process.env.VERCEL) {
-    // Manual WIF flow — explicit and debuggable
-    const accessToken = await getGcpAccessToken();
-
-    // Build a minimal auth client that returns our access token
-    const { GoogleAuth } = await import('google-auth-library');
-    const auth = new GoogleAuth({
-      credentials: { type: 'authorized_user' },
-    });
-    // Override the getAccessToken method on a plain client
-    const authClient = await auth.fromJSON({ type: 'authorized_user', client_id: 'x', client_secret: 'x', refresh_token: 'x' }).catch(() => null);
-
-    // Simplest approach: use the Storage JSON API directly with fetch
-    return { accessToken, useDirectApi: true };
-  }
-  // Local dev: uses Application Default Credentials
-  return { storage: new Storage({ projectId: PROJECT_ID }), useDirectApi: false };
 }
 
 export async function POST(request) {
@@ -97,27 +73,30 @@ export async function POST(request) {
     const buffer = Buffer.from(bytes);
     const safeFileName = `uploads/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
 
-    const ctx = await getStorage();
+    if (process.env.VERCEL) {
+      // ── Vercel: keyless WIF auth → direct GCS JSON API call ──────────────
+      const accessToken = await getGcpAccessToken();
+      const uploadUrl =
+        `https://storage.googleapis.com/upload/storage/v1/b/` +
+        `${BUCKET_NAME}/o?uploadType=media&name=${encodeURIComponent(safeFileName)}`;
 
-    if (ctx.useDirectApi) {
-      // Use the GCS JSON API directly with our access token
-      const uploadUrl = `https://storage.googleapis.com/upload/storage/v1/b/${BUCKET_NAME}/o?uploadType=media&name=${encodeURIComponent(safeFileName)}`;
       const gcsRes = await fetch(uploadUrl, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${ctx.accessToken}`,
+          Authorization: `Bearer ${accessToken}`,
           'Content-Type': file.type,
-          'Content-Length': String(buffer.length),
         },
         body: buffer,
       });
+
       if (!gcsRes.ok) {
         const errBody = await gcsRes.text();
         throw new Error(`GCS upload failed (${gcsRes.status}): ${errBody}`);
       }
-      console.log('[upload] File uploaded to GCS:', safeFileName);
     } else {
-      await ctx.storage.bucket(BUCKET_NAME).file(safeFileName).save(buffer, {
+      // ── Local: use @google-cloud/storage with ADC ─────────────────────────
+      const storage = new Storage({ projectId: PROJECT_ID });
+      await storage.bucket(BUCKET_NAME).file(safeFileName).save(buffer, {
         contentType: file.type,
         resumable: false,
       });
