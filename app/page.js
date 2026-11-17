@@ -44,6 +44,9 @@ export default function HomePage() {
     setErrorMsg('');
 
     try {
+      // Record time just before upload so polling only catches NEW results
+      const uploadStartedAt = new Date().toISOString();
+
       // Send file directly to our API route — it proxies to GCS server-side
       const formData = new FormData();
       formData.append('file', file);
@@ -56,10 +59,11 @@ export default function HomePage() {
         if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
       };
 
-      await new Promise((resolve, reject) => {
+      const uploadedFileName = await new Promise((resolve, reject) => {
         xhr.onload = () => {
           if (xhr.status === 200) {
-            resolve();
+            const { fileName } = JSON.parse(xhr.responseText);
+            resolve(fileName);
           } else {
             const msg = (() => { try { return JSON.parse(xhr.responseText)?.error; } catch { return null; } })();
             reject(new Error(msg || `Upload failed (${xhr.status})`));
@@ -72,15 +76,14 @@ export default function HomePage() {
       // Poll Supabase for Vision API results (Cloud Function processes async)
       setStatus('processing');
       setProgress(100);
-      await pollForResult();
-    } catch (err) {
+      await pollForResult(uploadedFileName, uploadStartedAt);    } catch (err) {
       console.error(err);
       setErrorMsg(err.message || 'Something went wrong');
       setStatus('error');
     }
   };
 
-  const pollForResult = async (attempts = 0) => {
+  const pollForResult = async (since, attempts = 0) => {
     if (attempts > 20) {
       setErrorMsg('Processing timed out. Check back in a moment.');
       setStatus('error');
@@ -90,6 +93,7 @@ export default function HomePage() {
     const { data } = await supabase
       .from('image_results')
       .select('*')
+      .gte('created_at', since)
       .order('created_at', { ascending: false })
       .limit(1)
       .single();
@@ -98,7 +102,7 @@ export default function HomePage() {
       setResult(data);
       setStatus('done');
     } else {
-      await pollForResult(attempts + 1);
+      await pollForResult(since, attempts + 1);
     }
   };
 

@@ -17,10 +17,22 @@ const supabase = createClient(
  * @param {object} cloudEvent - The CloudEvent from Eventarc
  */
 exports.processImage = async (cloudEvent) => {
-  const data = cloudEvent.data;
-  const bucketName = data.bucket;
-  const fileName = data.name;
-  const contentType = data.contentType || '';
+  // Log the full event structure so we can debug if data shape changes
+  console.log('[processImage] cloudEvent type:', cloudEvent?.type);
+  console.log('[processImage] cloudEvent data keys:', Object.keys(cloudEvent?.data || {}));
+
+  // GCS Eventarc CloudEvents: data is a StorageObjectData proto
+  // Some frameworks put it directly on cloudEvent.data, others nest it
+  const data = cloudEvent.data ?? cloudEvent;
+
+  const bucketName = data.bucket ?? data.bucketId ?? process.env.GCS_BUCKET_NAME;
+  const fileName   = data.name   ?? data.objectId ?? data.id;
+  const contentType = data.contentType ?? data.content_type ?? '';
+
+  if (!bucketName || !fileName) {
+    console.error('[processImage] Missing bucket or file name. Full event:', JSON.stringify(cloudEvent));
+    throw new Error('Could not extract bucket/fileName from event');
+  }
 
   console.log(`[processImage] Triggered for gs://${bucketName}/${fileName}`);
   console.log(`[processImage] Content-Type: ${contentType}`);
@@ -31,7 +43,7 @@ exports.processImage = async (cloudEvent) => {
     return;
   }
 
-  const gcsUri = `gs://${bucketName}/${fileName}`;
+  const gcsUri   = `gs://${bucketName}/${fileName}`;
   const imageUrl = `https://storage.googleapis.com/${bucketName}/${fileName}`;
 
   try {
@@ -78,7 +90,6 @@ exports.processImage = async (cloudEvent) => {
     console.log(`[processImage] ✅ Successfully processed and saved: ${fileName}`);
   } catch (err) {
     console.error(`[processImage] ❌ Fatal error processing ${fileName}:`, err.message);
-    // Re-throw so GCP marks the invocation as failed and retries if needed
     throw err;
   }
 };
