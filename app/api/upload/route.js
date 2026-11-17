@@ -5,9 +5,12 @@ const PROJECT_ID  = process.env.GCP_PROJECT_ID;
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
 
 // WIF config — keyless auth for Vercel (no SA key needed)
-const WIF_AUDIENCE =
+// STS audience: the full WIF provider resource path
+const WIF_STS_AUDIENCE =
   `//iam.googleapis.com/projects/61278613673/locations/global/` +
   `workloadIdentityPools/vercel-pool/providers/vercel-provider`;
+// OIDC audience: what Vercel actually puts in the token (must match allowed-audiences on the provider)
+const VERCEL_OIDC_AUDIENCE = 'https://vercel.com/aryan-sonawanes-projects';
 const SA_EMAIL =
   'gcp-ai-pipeline-sa@gcp-ai-pipeline-515018.iam.gserviceaccount.com';
 
@@ -18,13 +21,14 @@ async function getStorage() {
 
     const authClient = ExternalAccountClient.fromJSON({
       type: 'external_account',
-      audience: WIF_AUDIENCE,
+      audience: WIF_STS_AUDIENCE,
       subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
       token_url: 'https://sts.googleapis.com/v1/token',
       service_account_impersonation_url:
         `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA_EMAIL}:generateAccessToken`,
       subject_token_supplier: {
-        getSubjectToken: () => getVercelOidcToken(WIF_AUDIENCE),
+        // Pass the team-scoped audience that Vercel will embed in the OIDC token
+        getSubjectToken: () => getVercelOidcToken(VERCEL_OIDC_AUDIENCE),
       },
     });
 
